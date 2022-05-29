@@ -1,5 +1,8 @@
 #!/bin/sh
 #
+# Japan internet radio live streaming player
+# forked from uru2/radish
+#
 # Japan internet radio live streaming recoder
 # Copyright (C) 2019 uru (https://twitter.com/uru_2)
 # License is MIT (see LICENSE file)
@@ -16,14 +19,12 @@ show_usage() {
   cat << _EOT_
 Usage: $(basename "$0") [options]
 Options:
-  -t TYPE         Record type
-                    nhk: NHK Radidu
+  -t TYPE         Play type
+                    nhk: NHK Radio
                     radiko: radiko
                     lisradi: ListenRadio
                     shiburadi: Shibuya no Radio
   -s STATION ID   Station ID
-  -d MINUTE       Record minute(s)
-  -o FILEPATH     Output file path
   -i ADDRESS      login mail address (radiko only)
   -p PASSWORD     login password (radiko only)
   -l              Show all station ID list
@@ -39,18 +40,18 @@ _EOT_
 #######################################
 show_all_stations() {
   # Radiru
-  echo "Record type: nhk"
-  list=$(curl --silent "https://www.nhk.or.jp/radio/config/config_v5.8.0_radiru_and.xml")
-  cnt=$(echo "${list}" | xmllint --xpath "count(/radiru_config/area)" - 2> /dev/null)
+  echo "Play type: nhk"
+  list=$(curl --silent "https://www.nhk.or.jp/radio/config/config_web.xml")
+  cnt=$(echo "${list}" | xmllint --xpath "count(/radiru_config/stream_url/data/area)" - 2> /dev/null)
   for i in $(awk "BEGIN { for (i = 1; i <= ${cnt}; i++) { print i } }"); do
-    echo "  $(echo "${list}" | xmllint --xpath "concat(string((/radiru_config/area)[${i}]/@id), '-r1: ', string((/radiru_config/area)[${i}]/@name), ' R1')" - 2> /dev/null)"
-    echo "  $(echo "${list}" | xmllint --xpath "concat(string((/radiru_config/area)[${i}]/@id), '-fm: ', string((/radiru_config/area)[${i}]/@name), ' FM')" - 2> /dev/null)"
+    echo "  $(echo "${list}" | xmllint --xpath "concat(string((/radiru_config/stream_url/data)[${i}]/area), '-r1: ', string((/radiru_config/stream_url/data)[${i}]/areajp), ' R1')" - 2> /dev/null)"
+    echo "  $(echo "${list}" | xmllint --xpath "concat(string((/radiru_config/stream_url/data)[${i}]/area), '-fm: ', string((/radiru_config/stream_url/data)[${i}]/areajp), ' FM')" - 2> /dev/null)"
   done
   echo "  r2: R2"
   echo ""
 
   # radiko
-  echo "Record type: radiko"
+  echo "Play type: radiko"
   list=$(curl --silent "https://radiko.jp/v3/station/region/full.xml")
   cnt=$(echo "${list}" | xmllint --xpath "count(/region/stations/station)" - 2> /dev/null)
   for i in $(awk "BEGIN { for (i = 1; i <= ${cnt}; i++) { print i } }"); do
@@ -59,12 +60,12 @@ show_all_stations() {
   echo ""
 
   # ListenRadio
-  echo "Record site type: lisradi"
+  echo "Play site type: lisradi"
   curl --silent "http://listenradio.jp/service/channel.aspx" | jq -r '.Channel[] | "  " + (.ChannelId | tostring) + ": " + .ChannelName' 2> /dev/null
   echo ""
 
   # Shibuya no Radio
-  echo "Record type: shiburadi"
+  echo "Play type: shiburadi"
   echo "  None"
   echo ""
 }
@@ -132,7 +133,7 @@ logout_radiko() {
 #   1: Failed
 #######################################
 radiko_authorize() {
-  radiko_session=$1  
+  radiko_session=$1
 
   # Define authorize key value (from https://radiko.jp/apps/js/playerCommon.js)
   RADIKO_AUTHKEY_VALUE="bcd151073c03b352e1ef2fd66c32209da9ca0afa"
@@ -191,12 +192,12 @@ get_hls_uri_nhk() {
 
   if [ "${station_id}" = "r2" ]; then
     # R2
-    curl --silent "https://www.nhk.or.jp/radio/config/config_v5.8.0_radiru_and.xml" | xmllint --xpath "string(/radiru_config/config[@key='url_stream_r2']/value[1]/@text)" - 2> /dev/null
+    curl --silent "https://www.nhk.or.jp/radio/config/config_web.xml" | xmllint --nocdata --xpath "/radiru_config/stream_url/data[area='tokyo']/r2hls/text()" - 2> /dev/null
   else
     # Split area and channel
     area="$(echo "${station_id}" | cut -d '-' -f 1)"
     channel="$(echo "${station_id}" | cut -d '-' -f 2)"
-    curl --silent "https://www.nhk.or.jp/radio/config/config_v5.8.0_radiru_and.xml" | xmllint --xpath "string(/radiru_config/area[@id='${area}']/config[@key='url_stream_${channel}']/value[1]/@text)" - 2> /dev/null
+    curl --silent "https://www.nhk.or.jp/radio/config/config_web.xml" | xmllint --nocdata --xpath "/radiru_config/stream_url/data[area='${area}']/${channel}hls/text()" - 2> /dev/null
   fi
 }
 
@@ -244,22 +245,6 @@ get_hls_uri_shiburadi() {
   curl --silent "https://shibuyanoradio.info/infoapi/?ver=1.1" | jq -r ".basicinfo.hls_playback" 2> /dev/null
 }
 
-#######################################
-# Format time text
-# Arguments:
-#   Time minute
-# Returns:
-#   None
-#######################################
-format_time() {
-  minute=$1
-
-  hour=$((minute / 60))
-  minute=$((minute % 60))
-
-  printf "%02d:%02d:%02d" "${hour}" "${minute}" "0"
-}
-
 
 ##### Main routine start #####
 
@@ -272,23 +257,15 @@ fi
 # Parse argument
 type=""
 station_id=""
-duration=0
-output=""
 login_id=""
 login_password=""
-while getopts t:s:d:o:i:p:l option; do
+while getopts t:s:i:p:l option; do
   case "${option}" in
     t)
       type="${OPTARG}"
       ;;
     s)
       station_id="${OPTARG}"
-      ;;
-    d)
-      duration="${OPTARG}"
-      ;;
-    o)
-      output="${OPTARG}"
       ;;
     i)
       login_id="${OPTARG}"
@@ -331,13 +308,6 @@ if [ -z "${type}" ]; then
   echo "Require \"Type\"" >&2
   exit 1
 fi
-echo "${duration}" | grep -q -E "^[0-9]+$"
-ret=$?
-if [ ${ret} -ne 0 ]; then
-  # -d value is invalid
-  echo "Invalid \"Record minute\"" >&2
-  exit 1
-fi
 if [ "${type}" = "shiburadi" ]; then
   station_id="shiburadi"
 else
@@ -348,26 +318,10 @@ else
   fi
 fi
 
-# Generate default file path
-file_ext="m4a"
-if [ "${type}" = "shiburadi" ]; then
-  file_ext="mp3"
-fi
-if [ -z "${output}" ]; then
-  output="${station_id}_$(date +%Y%m%d%H%M%S).${file_ext}"
-else
-  # Fix file path extension
-  echo "${output}" | grep -q -E "\\.${file_ext}$"
-  ret=$?
-  if [ ${ret} -ne 0 ]; then
-    output="${output}.${file_ext}"
-  fi
-fi
-
 playlist_uri=""
 radiko_authtoken=""
 
-# Record type processes
+# Play type processes
 if [ "${type}" = "nhk" ]; then
   # NHK
   playlist_uri=$(get_hls_uri_nhk "${station_id}")
@@ -412,44 +366,24 @@ if [ -z "${playlist_uri}" ]; then
   exit 1
 fi
 
-# Record
+# Play
 if [ "${type}" = "radiko" ]; then
-  ffmpeg \
+  ffplay \
       -loglevel error \
       -fflags +discardcorrupt \
       -headers "X-Radiko-Authtoken: ${radiko_authtoken}" \
       -i "${playlist_uri}" \
-      -acodec copy \
-      -vn \
-      -bsf:a aac_adtstoasc \
-      -y \
-      -t "$(format_time "${duration}")" \
-      "${output}"
-elif [ "${type}" = "shiburadi" ]; then
-  ffmpeg \
-      -loglevel error \
-      -fflags +discardcorrupt \
-      -i "${playlist_uri}" \
-      -acodec copy \
-      -vn \
-      -y \
-      -t "$(format_time "${duration}")" \
-      "${output}"
+      -nodisp
 else
-  ffmpeg \
+  ffplay \
       -loglevel error \
       -fflags +discardcorrupt \
       -i "${playlist_uri}" \
-      -acodec copy \
-      -vn \
-      -bsf:a aac_adtstoasc \
-      -y \
-      -t "$(format_time "${duration}")" \
-      "${output}"
+      -nodisp
 fi
 ret=$?
 if [ ${ret} -ne 0 ]; then
-  echo "Record failed" >&2
+  echo "Play failed" >&2
   exit 1
 fi
 
